@@ -4,17 +4,10 @@
 Provides an LLM provider implementation for interacting with gpt4free.
 """
 
-import logging
-from typing import List, Optional, Dict, Any, Type
-
-from pydantic import BaseModel, BaseSettings, Field, validator
-
-from .base_provider import AbstractLLMProvider
-
-# Configure logging
-logger = logging.getLogger(__name__)
-
-# Attempt to import g4f and related components
+from typing import Any
+from notebook_intelligence.api import ChatModel, EmbeddingModel, InlineCompletionModel, LLMProvider, CancelToken, ChatResponse, CompletionContext
+from pydantic_settings import BaseSettings
+from pydantic import BaseModel, Field, validator
 try:
     import g4f
     from g4f.errors import ProviderNotFoundError, ModelNotFoundError, RetryProviderError
@@ -35,6 +28,14 @@ except ImportError:
     logger.warning("gpt4free library not found. Gpt4FreeLLMProvider will not be available.")
     logger.warning("Please install it using: pip install -U gpt4free")
 
+import logging
+
+from notebook_intelligence.util import extract_llm_generated_code
+
+log = logging.getLogger(__name__)
+
+GPT4FREE_EMBEDDING_FAMILIES = set(["claude-3.7-sonnet", "claude-3.7-sonnet"])
+GPT4FREE_INLINE_COMPL_PROMPT = """<｜fim▁begin｜>{prefix}<｜fim▁hole｜>{suffix}<｜fim▁end｜>"""
 
 class Gpt4FreeSettings(BaseSettings):
     """
@@ -43,8 +44,8 @@ class Gpt4FreeSettings(BaseSettings):
     Reads settings from environment variables with the prefix 'GPT4FREE_'.
     """
 
-    provider: str = Field("DeepAi", description="The gpt4free provider name to use (e.g., 'DeepAi', 'You').")
-    model: str = Field("gpt-3.5-turbo", description="The model name to use within gpt4free (e.g., 'gpt-3.5-turbo', 'gpt-4').")
+    provider: str = Field("__all__", description="The gpt4free provider name to use (e.g., 'DeepAi', 'You').")
+    model: str = Field("claude-3.7-sonnet", description="The model name to use within gpt4free (e.g., 'gpt-3.5-turbo', 'gpt-4').")
 
     class Config:
         """Pydantic configuration settings."""
@@ -66,91 +67,37 @@ class Gpt4FreeSettings(BaseSettings):
             raise ValueError(f"Unknown gpt4free provider name: '{v}'. Available providers might include: {g4f.Provider.__all__}")
         return v
 
-    @validator("model")
-    def validate_model(cls, v: str) -> str:
-        """Basic validation for model string (doesn't guarantee compatibility with chosen provider)."""
-        # This validation is limited as g4f's model resolution can be complex.
-        # We check if it *might* be a known model string format.
-        if not _G4F_AVAILABLE:
-             logger.warning("Skipping g4f model validation as library is not installed.")
-             return v
-        # Simple check, actual compatibility depends on the provider
-        if not v:
-            raise ValueError("Model name cannot be empty.")
-        # You could add more sophisticated checks here if needed,
-        # potentially checking against g4f.models if that seems stable.
-        return v
+class Gpt4FreeChatModel(ChatModel):
+    def __init__(self, provider: LLMProvider, model_id: str, model_name: str, context_window: int):
+        super().__init__(provider)
+        self._model_id = model_id
+        self._model_name = model_name
+        self._context_window = context_window
 
+    @property
+    def id(self) -> str:
+        return self._model_id
 
-class Gpt4FreeLLMProvider(AbstractLLMProvider):
-    """
-    An LLM provider implementation using the gpt4free library.
+    @property
+    def name(self) -> str:
+        return self._model_name
 
-    This provider allows using various free LLM services accessible
-    through the gpt4free library. Note that the reliability and availability
-    of these services can vary.
-    """
+    @property
+    def context_window(self) -> int:
+        return self._context_window
+    ##TODO
+    def completions(self, messages: list[dict], tools: list[dict] = None, response: ChatResponse = None, cancel_token: CancelToken = None, options: dict = {}) -> Any:
+        stream = response is not None
+        completion_args = {
+            "model": self._model_id, 
+            "messages": messages.copy(),
+            "stream": stream,
+        }
+        if tools is not None and len(tools) > 0:
+            completion_args["tools"] = tools
 
-    def __init__(self, settings: Optional[Gpt4FreeSettings] = None) -> None:
-        """
-        Initializes the Gpt4FreeLLMProvider.
-
-        Args:
-            settings: Configuration settings for the provider. If None, settings
-                      are loaded from environment variables.
-
-        Raises:
-            ImportError: If the 'gpt4free' library is not installed.
-            ValueError: If the configured provider or model is invalid.
-        """
-        if not _G4F_AVAILABLE:
-            raise ImportError(
-                "The 'gpt4free' library is required to use Gpt4FreeLLMProvider. "
-                "Please install it: pip install -U gpt4free"
-            )
-
-        self.settings = settings or Gpt4FreeSettings()
-        self.logger = logging.getLogger(__name__)
-        self._provider_instance: Optional[Type[BaseProvider]] = None
-        self._model_instance: Optional[Model] = None
-
-        self._resolve_provider_and_model()
-
-        self.logger.info(
-            f"Initialized Gpt4FreeLLMProvider with provider '{self.settings.provider}' "
-            f"and model '{self.settings.model}'"
-        )
-
-    def _resolve_provider_and_model(self) -> None:
-        """Resolves provider and model instances based on settings."""
-        try:
-            self._provider_instance = getattr(g4f.Provider, self.settings.provider)
-            self.logger.debug(f"Resolved g4f provider: {self._provider_instance}")
-        except AttributeError as e:
-            self.logger.error(f"Failed to resolve gpt4free provider: {self.settings.provider}")
-            raise ValueError(f"Invalid gpt4free provider '{self.settings.provider}' specified in settings.") from e
-
-        try:
-            # g4f uses ModelUtils or direct model mappings. We pass the string name.
-            # Actual resolution happens inside g4f.ChatCompletion.create
-            # Let's store the model *name* string for clarity.
-            # We can try resolving using ModelUtils for an early check if desired,
-            # but g4f.ChatCompletion.create handles the main logic.
-            # For simplicity, we'll rely on the validation in settings and pass the string.
-            pass # Model string is stored in self.settings.model
-        except Exception as e: # Catch potential errors if we add resolution logic later
-             self.logger.error(f"Failed to validate/resolve gpt4free model: {self.settings.model}")
-             raise ValueError(f"Invalid gpt4free model '{self.settings.model}' for provider '{self.settings.provider}'.") from e
-
-
-    def get_completion(
-        self,
-        prompt: str,
-        system_message: Optional[str] = None,
-        temperature: float = 0.7,
-        max_tokens: Optional[int] = None,
-    ) -> Optional[str]:
-        """
+        return ""
+"""
         Gets a completion from the configured gpt4free provider and model.
 
         Note: `max_tokens` might not be supported by all gpt4free providers.
@@ -164,7 +111,15 @@ class Gpt4FreeLLMProvider(AbstractLLMProvider):
 
         Returns:
             The generated text completion as a string, or None if an error occurred.
-        """
+"""
+"""
+def get_completion(
+        self,
+        prompt: str,
+        system_message: Optional[str] = None,
+        temperature: float = 0.7,
+        max_tokens: Optional[int] = None,
+    ) -> Optional[str]:
         if not self._provider_instance:
              self.logger.error("Gpt4Free provider instance not resolved during initialization.")
              return None
@@ -212,31 +167,123 @@ class Gpt4FreeLLMProvider(AbstractLLMProvider):
             # Catch any other unexpected errors from g4f or network issues
             self.logger.exception(f"An unexpected error occurred while calling gpt4free provider '{self.settings.provider}': {e}", exc_info=True)
             return None
+"""
 
-    def get_models(self) -> List[str]:
-        """
-        Gets a list of available provider names from gpt4free.
 
-        Note: This lists the *providers* available in the g4f library,
-              not necessarily models compatible with a specific provider.
-              Model availability depends on the chosen provider.
+class Gpt4FreeInlineCompletionModel(InlineCompletionModel):
+    def __init__(self, provider: LLMProvider, model_id: str, model_name: str, context_window: int, prompt_template: str):
+        super().__init__(provider)
+        self._model_id = model_id
+        self._model_name = model_name
+        self._context_window = context_window
+        self._prompt_template = prompt_template
 
-        Returns:
-            A list of available gpt4free provider name strings.
-        """
-        if not _G4F_AVAILABLE:
-            self.logger.warning("Cannot list g4f providers because the library is not installed.")
-            return []
+    @property
+    def id(self) -> str:
+        return self._model_id
+
+    @property
+    def name(self) -> str:
+        return self._model_name
+
+    @property
+    def context_window(self) -> int:
+        return self._context_window
+
+    def inline_completions(self, prefix, suffix, language, filename, context: CompletionContext, cancel_token: CancelToken) -> str:
+        has_suffix = suffix.strip() != ""
+        if has_suffix:
+            prompt = self._prompt_template.format(prefix=prefix, suffix=suffix.strip())
+        else:
+            prompt = prefix
+
         try:
-            # g4f.Provider.__all__ usually lists the string names of providers
-            providers = g4f.Provider.__all__
-            if isinstance(providers, list) and all(isinstance(p, str) for p in providers):
-                 self.logger.info(f"Found {len(providers)} potential g4f providers.")
-                 return providers
-            else:
-                 self.logger.warning(f"Unexpected format for g4f.Provider.__all__: {type(providers)}. Returning empty list.")
-                 return []
-        except Exception as e:
-            self.logger.exception(f"An error occurred while trying to list gpt4free providers: {e}", exc_info=True)
-            return []
+            generate_args = {
+                "model": self._model_id, 
+                "prompt": prompt,
+                "raw": True,
+                "options": {
+                    'num_predict': 128,
+                    "temperature": 0,
+                    "stop" : [
+                        "<|end▁of▁sentence|>",
+                        "<｜end▁of▁sentence｜>",
+                        "<|EOT|>",
+                        "<EOT>",
+                        "\\n",
+                        "</s>",
+                        "<|eot_id|>",
+                    ],
+                },
+            }
+            ## TODO ?
+            g4f_response = g4f.generate(**generate_args)
+            code = g4f_response.response
+            code = extract_llm_generated_code(code)
 
+            return code
+        except Exception as e:
+            log.error(f"Error occurred while generating using completions ollama: {e}")
+            return ""
+
+class Gpt4FreeLLMProvider(LLMProvider):
+    def __init__(self):
+        super().__init__()
+        self._chat_models = []
+        self.update_chat_model_list()
+
+    @property
+    def id(self) -> str:
+        return "gpt4free"
+
+    @property
+    def name(self) -> str:
+        return "Gpt4Free"
+
+    @property
+    def chat_models(self) -> list[ChatModel]:
+        return self._chat_models
+
+    @property
+    def inline_completion_models(self) -> list[InlineCompletionModel]:
+        return [
+            Gpt4FreeInlineCompletionModel(self, "claude-3.7-sonnet", "claude-3.7-sonnet", 163840, GPT4FREE_INLINE_COMPL_PROMPT),
+        ]
+
+    @property
+    def embedding_models(self) -> list[EmbeddingModel]:
+        return []
+
+    def get_list(self):
+        return [
+            Gpt4FreeChatModel("claude-3.7-sonnet", "claude-3.7-sonnet", 163840),
+        ]
+
+    def update_chat_model_list(self):
+        try:
+            ## TODO
+            # response = ollama.list()
+            self._chat_models.append(
+                Gpt4FreeChatModel("claude-3.7-sonnet", "claude-3.7-sonnet", 163840),
+            )
+        except Exception as e:
+            log.error(f"Error updating supported Gpt4Free models: {e}")
+"""
+            response = self.get_list()
+            models = response.models
+            self._chat_models = []
+            for model in models:
+                try:
+                    model_family = model.details.family
+                    if model_family in GPT4FREE_EMBEDDING_FAMILIES:
+                        continue
+                    model_show = ollama.show(model.model)
+                    model_info = model_show.modelinfo
+                    context_window = model_info[f"{model_family}.context_length"]
+                    self._chat_models.append(
+                        Gpt4FreeChatModel(self, model.model, model.model, context_window)
+                    )
+                except Exception as e:
+                    log.error(f"Error getting Gpt4Free model info {model}: {e}")
+"""
+        
