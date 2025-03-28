@@ -38,6 +38,7 @@ class AIServiceManager(Host):
         self._openai_compatible_llm_provider = OpenAICompatibleLLMProvider()
         self._litellm_compatible_llm_provider = LiteLLMCompatibleLLMProvider()
         self._ollama_llm_provider = OllamaLLMProvider()
+        self._gpt4free_llm_provider = Gpt4FreeLLMProvider()
         self.initialize()
 
     @property
@@ -48,12 +49,17 @@ class AIServiceManager(Host):
     def ollama_llm_provider(self) -> OllamaLLMProvider:
         return self._ollama_llm_provider
 
+    @property
+    def gpt4free_llm_provider(self) -> Gpt4FreeLLMProvider:
+        return self._gpt4free_llm_provider
+
     def initialize(self):
         self.chat_participants = {}
         self.register_llm_provider(GitHubCopilotLLMProvider())
         self.register_llm_provider(self._openai_compatible_llm_provider)
         self.register_llm_provider(self._litellm_compatible_llm_provider)
         self.register_llm_provider(self._ollama_llm_provider)
+        self.register_llm_provider(self._gpt4free_llm_provider)
         self._mcp_manager = MCPManager(self.nbi_config.mcp)
         for participant in self._mcp_manager.get_mcp_participants():
             self.register_chat_participant(participant)
