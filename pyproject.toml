@@ -30,8 +30,8 @@ dependencies = [
     "openai",
     "ollama",
     "g4f",
-    "typing",
     "pydantic",
+    "pydantic-settings",
     "mcp"
 ]
 dynamic = ["version", "description", "authors", "urls", "keywords"]
