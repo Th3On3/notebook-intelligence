@@ -4,27 +4,31 @@ import json
 from typing import Any
 from notebook_intelligence.api import ChatModel, EmbeddingModel, InlineCompletionModel, LLMProvider, CancelToken, ChatResponse, CompletionContext, LLMProviderProperty
 from g4f.client import Client as Gpt4Free
+from g4f.Provider import ProviderType, ProviderUtils, __providers__
+
 
 DEFAULT_CONTEXT_WINDOW = 4096
 
+LIST_MODELS = []
+LIST_INLINE_MODELS = []
+
 class Gpt4FreeChatModel(ChatModel):
-    def __init__(self, provider: "Gpt4FreeLLMProvider"):
+    def __init__(self, provider, model_id):
         super().__init__(provider)
         self._provider = provider
+        self.model_id = model_id
         self._properties = [
-            LLMProviderProperty("api_key", "API key", "API key", "", False),
-            LLMProviderProperty("model_id", "Model", "Model (must support streaming)", "", False),
-            LLMProviderProperty("base_url", "Base URL", "Base URL", "", True),
+            #LLMProviderProperty("api_key", "API key", "API key", "", True),
             LLMProviderProperty("context_window", "Context window", "Context window length", "", True),
         ]
 
     @property
     def id(self) -> str:
-        return "gpt4free-compatible-chat-model"
+        return self.model_id
     
     @property
     def name(self) -> str:
-        return self.get_property("model_id").value
+        return self.model_id
     
     @property
     def context_window(self) -> int:
@@ -38,13 +42,11 @@ class Gpt4FreeChatModel(ChatModel):
 
     def completions(self, messages: list[dict], tools: list[dict] = None, response: ChatResponse = None, cancel_token: CancelToken = None, options: dict = {}) -> Any:
         stream = response is not None
-        model_id = self.get_property("model_id").value
-        base_url_prop = self.get_property("base_url")
-        base_url = base_url_prop.value if base_url_prop is not None else None
-        base_url = base_url if base_url.strip() != "" else None
-        api_key = self.get_property("api_key").value
+        model_id = self.model_id
+        #api_key = self.get_property("api_key").value
 
-        client = Gpt4Free(base_url=base_url, api_key=api_key)
+        #client = Gpt4Free(api_key=api_key)
+        client = Gpt4Free()
         resp = client.chat.completions.create(
             model=model_id,
             messages=messages.copy(),
@@ -70,23 +72,22 @@ class Gpt4FreeChatModel(ChatModel):
             return json_resp
     
 class Gpt4FreeInlineCompletionModel(InlineCompletionModel):
-    def __init__(self, provider: "Gpt4FreeLLMProvider"):
+    def __init__(self, provider, model_id):
         super().__init__(provider)
         self._provider = provider
+        self.model_id = model_id
         self._properties = [
-            LLMProviderProperty("api_key", "API key", "API key", "", False),
-            LLMProviderProperty("model_id", "Model", "Model", "", False),
-            LLMProviderProperty("base_url", "Base URL", "Base URL", "", True),
+            #LLMProviderProperty("api_key", "API key", "API key", "", True),
             LLMProviderProperty("context_window", "Context window", "Context window length", "", True),
         ]
 
     @property
     def id(self) -> str:
-        return "gpt4free-compatible-inline-completion-model"
+        return self.model_id
     
     @property
     def name(self) -> str:
-        return "Inline Completion Model"
+        return self.model_id
     
     @property
     def context_window(self) -> int:
@@ -99,13 +100,11 @@ class Gpt4FreeInlineCompletionModel(InlineCompletionModel):
             return DEFAULT_CONTEXT_WINDOW
 
     def inline_completions(self, prefix, suffix, language, filename, context: CompletionContext, cancel_token: CancelToken) -> str:
-        model_id = self.get_property("model_id").value
-        base_url_prop = self.get_property("base_url")
-        base_url = base_url_prop.value if base_url_prop is not None else None
-        base_url = base_url if base_url.strip() != "" else None
-        api_key = self.get_property("api_key").value
+        model_id = self.model_id
+        #api_key = self.get_property("api_key").value
 
-        client = Gpt4Free(base_url=base_url, api_key=api_key)
+        #client = Gpt4Free(api_key=api_key)
+        client = Gpt4Free()
         resp = client.completions.create(
             model=model_id,
             prompt=prefix,
@@ -118,8 +117,20 @@ class Gpt4FreeInlineCompletionModel(InlineCompletionModel):
 class Gpt4FreeLLMProvider(LLMProvider):
     def __init__(self):
         super().__init__()
-        self._chat_model = Gpt4FreeChatModel(self)
-        self._inline_completion_model = Gpt4FreeInlineCompletionModel(self)
+        for provider in __providers__:
+            if provider.working==True:
+                if (hasattr(provider, 'models') and provider.needs_auth==False):
+                    models = provider.models
+                    for model in models:
+                         if model not in LIST_MODELS:
+                            m = Gpt4FreeChatModel(provider=self,model_id=model)
+                            LIST_MODELS.append(m)
+                            mi = Gpt4FreeInlineCompletionModel(provider=self,model_id=model)
+                            LIST_INLINE_MODELS.append(mi)
+        LIST_MODELS.sort(key=lambda x: x.model_id)
+        LIST_INLINE_MODELS.sort(key=lambda x: x.model_id)
+        self._chat_models = LIST_MODELS
+        self._inline_completion_models = LIST_INLINE_MODELS
 
     @property
     def id(self) -> str:
@@ -131,11 +142,11 @@ class Gpt4FreeLLMProvider(LLMProvider):
 
     @property
     def chat_models(self) -> list[ChatModel]:
-        return [self._chat_model]
+        return self._chat_models
     
     @property
     def inline_completion_models(self) -> list[InlineCompletionModel]:
-        return [self._inline_completion_model]
+        return self._inline_completion_models
     
     @property
     def embedding_models(self) -> list[EmbeddingModel]:
