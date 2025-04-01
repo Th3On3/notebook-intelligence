@@ -1,5 +1,4 @@
 # Copyright (c) Mehmet Bektas <mbektasgh@outlook.com>
-
 import json
 from typing import Any
 from notebook_intelligence.api import ChatModel, EmbeddingModel, InlineCompletionModel, LLMProvider, CancelToken, ChatResponse, CompletionContext, LLMProviderProperty
