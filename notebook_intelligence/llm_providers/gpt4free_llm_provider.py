@@ -3,13 +3,23 @@ import json
 from typing import Any
 from notebook_intelligence.api import ChatModel, EmbeddingModel, InlineCompletionModel, LLMProvider, CancelToken, ChatResponse, CompletionContext, LLMProviderProperty
 from g4f.client import Client as Gpt4Free
-from g4f.Provider import ProviderType, ProviderUtils, __providers__
+from g4f import models, ChatCompletion
+from g4f.providers.types import BaseRetryProvider, ProviderType
+from g4f.providers.base_provider import ProviderModelMixin
+from g4f.Provider import __providers__
+from g4f.models import _all_models
+from g4f import debug
 
 
 DEFAULT_CONTEXT_WINDOW = 4096
 
 LIST_MODELS = []
 LIST_INLINE_MODELS = []
+
+def append_if_not_in_list(my_list, element):
+    if element not in my_list:
+        my_list.append(element)
+    return my_list
 
 class Gpt4FreeChatModel(ChatModel):
     def __init__(self, provider, model_id):
@@ -116,18 +126,23 @@ class Gpt4FreeInlineCompletionModel(InlineCompletionModel):
 class Gpt4FreeLLMProvider(LLMProvider):
     def __init__(self):
         super().__init__()
-        for provider in __providers__:
-            if provider.working==True:
-                if (hasattr(provider, 'models') and provider.needs_auth==False):
-                    models = provider.models
-                    for model in models:
-                         if model not in LIST_MODELS:
-                            m = Gpt4FreeChatModel(provider=self,model_id=model)
-                            LIST_MODELS.append(m)
-                            mi = Gpt4FreeInlineCompletionModel(provider=self,model_id=model)
-                            LIST_INLINE_MODELS.append(mi)
-        LIST_MODELS.sort(key=lambda x: x.model_id)
-        LIST_INLINE_MODELS.sort(key=lambda x: x.model_id)
+        models_global=[]
+        providers = [provider for provider in __providers__ if provider.working]
+        for idx, _provider in enumerate(providers):
+            if issubclass(_provider, ProviderModelMixin) and _provider.needs_auth==False:
+                try:
+                        all_models = _provider.get_models()
+                        models = [model for model in _all_models if model in all_models or model in _provider.model_aliases]
+                        for m in models:
+                            append_if_not_in_list(models_global,m)
+                except:
+                    pass
+        models_global.sort()
+        for model in models_global:
+            m = Gpt4FreeChatModel(provider=self,model_id=model)
+            LIST_MODELS.append(m)
+            mi = Gpt4FreeInlineCompletionModel(provider=self,model_id=model)
+            LIST_INLINE_MODELS.append(mi)
         self._chat_models = LIST_MODELS
         self._inline_completion_models = LIST_INLINE_MODELS
 
